@@ -1,0 +1,148 @@
+#include "Connector.h"
+
+#define WIFI_SSID "Ainfo"
+#define WIFI_PASSWORD "daon7521"
+
+// device/ag.example.esp32/abc123/status : 장치 상태
+// device/ag.example.esp32/abc123/public : 온습도 데이터
+// device/ag.example.esp32/abc123/notify/public : 온습도 요청
+// device/ag.example.esp32 : Client Group(시리얼번호 제외)
+#define CLIENT_ID "device/com.daon.soriESP32/950409" // MQTT 클라이언트 ID (장치 식별자)
+#define BROKER_SERVER "192.168.0.132"
+#define BROKER_PORT 16300
+
+#define TOPIC(y) CLIENT_ID y // 토픽 매크로 (CLIENT_ID + y로 토픽 생성)
+
+Connector CON; // MQTT 연결 및 통신을 담당하는 커넥터 인스턴스
+
+void connect(Connector *c);
+void message(Connector *c, const char *topic, Message *msg);
+
+void connect(Connector *c) // MQTT Broker 연결 시 호출되는 콜백 함수
+{
+	// Client ID 에서 시리얼 번호를 제외한 Client Group 토픽 구독 (복수 장치를 찾을 때 사용, 장치 개발 시 구독 필수)
+	c->subscribe(c->getClientGroup(), 0); // 클라이언트 그룹 구독
+
+	// 장치에서 사용할 토픽들 구독
+	c->subscribe(TOPIC("/notify/#"), 0); // 알림 토픽 구독
+
+	Serial.println("[Alert] Connected to MQTT broker.");
+	Serial.print("Broker: ");
+	Serial.println(BROKER_SERVER);
+	Serial.print("Port: ");
+	Serial.println(BROKER_PORT);
+	Serial.println();
+}
+
+void message(Connector *c, const char *topic, Message *msg) // MQTT 메시지 수신 시 호출되는 콜백 함수
+{
+	Serial.println("------------------------------------------");
+	Serial.println("[Alert] Message received.");
+	Serial.println("Received message: ");
+	Serial.print("Topic: ");
+	Serial.println(topic);
+
+	// 원시 데이터로 직접 확인
+	uint8_t *data = msg->getData();
+	uint32_t size = msg->getSize();
+
+	Serial.print("Raw Payload: ");
+	if (data != NULL && size > 0)
+	{
+		for (uint32_t i = 0; i < size; i++)
+		{
+			Serial.print((char)data[i]);
+		}
+		Serial.println();
+
+		// 16진수로도 확인
+		// Serial.print("[DEBUG] Hex: ");
+		// for (uint32_t i = 0; i < size && i < 20; i++)
+		// {
+		// 	Serial.printf("%02X ", data[i]);
+		// }
+		// Serial.println();
+	}
+	else
+	{
+		Serial.println();
+		Serial.println("[DEBUG] No Payload...");
+	}
+
+	Serial.print("Payload Size: ");
+	Serial.println(size);
+
+	// Client Group 토픽 처리: 상태 보고 = (Client Group 메시지 수신 시 상태 정보 발행)
+	if (strcmp(topic, c->getClientGroup()) == 0)
+	{
+		/*
+			현재 장치 상태를 "device/ag.example.esp32/abc123/status" 토픽으로 발행
+			엣지 애플리케이션 이름, 공급자, 모델명, 시리얼번호, 할당 받은 IP 주소 등을 포함하여 발행 (필수)
+		*/
+		// 디바이스 상태 정보 발행
+		c->publishJSON(TOPIC("/status"),
+					   "{\"name\":\"%s\",\"vendor\":\"%s\",\"model\":\"%s\",\"sn\":\"%s\",\"ip\":\"%s\"}",
+					   c->getName(),
+					   c->getVendor(),
+					   c->getModel(),
+					   c->getSN(),
+					   c->getIPAddress());
+	}
+	// public 토픽 처리
+	else if (strcmp(topic, TOPIC("/notify/public")) == 0)
+	{
+		// 센서 정보 발행
+		// JSON 데이터 형식으로 온도(DT), 습도(RH) 발행
+		c->publishJSON(TOPIC("/public"),
+					   "{\"DT\":%1.f,\"RH\":%1.f}",
+					   12.3,
+					   45.6);
+	}
+}
+
+void setup()
+{
+	Serial.begin(115200);
+
+	/*
+			엣지 디바이스 정보 설정
+
+			(1) name - 엣지 애플리케이션 이름
+			(2) vender - 공급자(회사명 등)
+			(3) model - 제품 모델명
+			(4) sn - 제품 시리얼번호
+			(5) passkey - 사용자 연결 확인용 패스키 (6자리 숫자 사용 권장, 랜덤 또는 지정하여 사용)
+	*/
+
+	// CON.setDescriptor("ag.phri.sensor200", "PHRI", "Sensor200", "44JI19", "123456");
+	CON.setDescriptor("com.daon.soriESP32", "DAON", "SoriESP32", "950409", "123456");
+
+	/*
+			온실 인트라넷 연결 방식 설정
+
+			1. 연결안함 : CON.setNetwork(CONNECTOR_TYPE_NONE);
+			2. 이더넷 : CON.setNetwork(CONNECTOR_TYPE_ETHERNET);
+			3. WiFi : CON.setNetwork(CONNECTOR_TYPE_WIFI, {Wi-Fi SSID}, {Wi-Fi Password});
+	*/
+	// CON.setNetwork(CONNECTOR_TYPE_ETHERNET);
+	// CON.setNetwork(CONNECTOR_TYPE_WIFI, "PHRI-WIFI", "123456");
+	CON.setNetwork(CONNECTOR_TYPE_WIFI, WIFI_SSID, WIFI_PASSWORD);
+
+	CON.setConnection(BROKER_SERVER, BROKER_PORT);
+
+	// MAC 주소 출력
+	uint8_t mac_HW[6];
+	esp_efuse_mac_get_default(mac_HW);
+	Serial.printf("HW MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+				  mac_HW[0], mac_HW[1], mac_HW[2], mac_HW[3], mac_HW[4], mac_HW[5]);
+
+	// MQTT Broker 연결 및 메시지 이벤트 콜백 등록
+	CON.setConnectCallback(connect);
+	CON.setMessageCallback(message);
+	CON.begin();
+}
+
+void loop()
+{
+	CON.loop();
+}

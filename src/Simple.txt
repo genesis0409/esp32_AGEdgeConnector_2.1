@@ -1,0 +1,101 @@
+#include "Connector.h"
+
+#define CLIENT_ID "device/ag.example.esp32/abc123"
+#define TOPIC(y) CLIENT_ID y
+
+// 전역변수 선언
+Connector CON;
+
+void setup()
+{
+
+	/*
+		엣지 디바이스 정보 설정
+
+		(1) name - 엣지 애플리케이션 이름
+		(2) vender - 공급자(회사명 등)
+		(3) model - 제품 모델명
+		(4) sn - 제품 시리얼번호
+		(5) passkey - 사용자 연결 확인용 패스키 (6자리 숫자 사용 권장, 랜덤 또는 지정하여 사용)
+	*/
+	CON.setDescriptor("ag.example.esp32", "ESP32", "ESP32-WROOM-32", "abc123", "654754");
+
+	/*
+		온실 인트라넷 연결 방식 설정
+
+		1. 연결않함 : CON.setNetwork(CONNECTOR_TYPE_NONE);
+		2. 이더넷 : CON.setNetwork(CONNECTOR_TYPE_ETHERNET);
+		3. WiFi : CON.setNetwork(CONNECTOR_TYPE_WIFI, {Wi-Fi SSID}, {Wi-Fi Password});
+	*/
+	CON.setNetwork(CONNECTOR_TYPE_WIFI, "PHRI-WIFI", "1234");
+
+	// MQTT Broker 연결 및 메시지 이벤트 콜백 등록
+	CON.setConnectCallback(connect);
+	CON.setMessageCallback(message);
+
+	// 엣지 서버(MQTT 브로커) 연결 시작
+	CON.begin();
+}
+
+void loop()
+{
+	/*
+		MQTT Client 메시지 처리
+
+		loop(intervals) 함수 내 intervals (밀리세컨드 초) 값을 지정하면,
+		매번 해당 시간이 지날때 마다 True를 리턴하여 코드를 실행함 (정밀하지 않으나 간단한 타이머 구현이 필요한 경우 유용)
+
+	*/
+	if (CON.loop(3000))
+	{
+
+		// 3초 간격으로 JSON 데이터 형식으로 온도(DT), 습도(RH) 발행
+		CON.publishJSON(TOPIC("/public"),
+						"{\"DT\":%1.f,\"RH\":%1.f}",
+						25.4,
+						56.2);
+	}
+}
+
+// MQTT Broker 연결 시 콜백 함수
+void connect(Connector *c)
+{
+
+	// Client ID 에서 시리얼 번호를 제외한 Client Group 토픽 구독 (복수 장치를 찾을 때 사용, 장치 개발 시 구독 필수)
+	c->subscribe(c->getClientGroup(), 0);
+
+	// 장치에서 사용할 토픽들 구독
+	c->subscribe(TOPIC("/notify/#"), 0);
+}
+
+// MQTT Broker 메시지 처리 콜백 함수
+void message(Connector *c, const char *topic, Message *msg)
+{
+
+	// Client Group 토픽 처리
+	if (strcmp(topic, c->getClientGroup()) == 0)
+	{
+
+		/*
+			현재 장치 상태를 "device/ag.example.esp32/abc123/status" 토픽으로 발행
+			엣지 애플리케이션 이름, 공급자, 모델명, 시리얼번호, 할당 받은 IP 주소 등을 포함하여 발행 (필수)
+		*/
+		c->publishJSON(TOPIC("/status"),
+					   "{\"name\":\"%s\",\"vendor\":\"%s\",\"model\":\"%s\",\"sn\":\"%s\",\"ip\":\"%s\"}",
+					   c->getName(),
+					   c->getVendor(),
+					   c->getModel(),
+					   c->getSN(),
+					   c->getIPAddress());
+	}
+	// 온습도 요청 토픽 처리
+	else if (strcmp(topic, TOPIC("/notify/public")) == 0)
+	{
+
+		// JSON 데이터 형식으로 온도(DT), 습도(RH) 발행
+		c->publishJSON(TOPIC("/public"),
+					   "{\"DT\":%1.f,\"RH\":%1.f}",
+					   25.4,
+					   56.2);
+	}
+}
